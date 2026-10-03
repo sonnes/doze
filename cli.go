@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
@@ -35,6 +36,7 @@ Usage:
   doze daemon [stop]
   doze setup                         trust the HTTPS CA and start the daemon at login (macOS)
   doze uninstall                     undo doze setup
+  doze version
 
 Flags:
   --name <name>   the subdomain (default: the package.json name or the directory name)
@@ -60,6 +62,9 @@ func Main(args []string) int {
 	switch args[0] {
 	case "-h", "--help", "help":
 		fmt.Print(usage)
+		return 0
+	case "version", "--version":
+		fmt.Println("doze", version())
 		return 0
 	case "run":
 		return runOneOff(args[1:])
@@ -89,6 +94,15 @@ func Main(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+// version returns the module version from the build info. go install and
+// go build in a tagged checkout set it, so a release needs no -ldflags.
+func version() string {
+	if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" {
+		return bi.Main.Version
+	}
+	return "(devel)"
 }
 
 func home() string {

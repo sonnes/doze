@@ -95,6 +95,7 @@ doze register go run . -addr :{port}
 | `doze daemon stop` | Stop the daemon and its apps. |
 | `doze setup` | Trust the HTTPS CA and start the daemon at login (macOS). |
 | `doze uninstall` | Remove the launchd agent and the trust of the CA. |
+| `doze version` | Show the version of doze. |
 
 Flags go before the command: `--name`, `--port`, and `--idle`.
 

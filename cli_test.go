@@ -251,3 +251,14 @@ func TestControlSocketIsPrivate(t *testing.T) {
 		t.Fatalf("socket mode = %o, want 600", perm)
 	}
 }
+
+func TestVersionPrintsBuildVersion(t *testing.T) {
+	e := newEnv(t)
+	for _, arg := range []string{"version", "--version"} {
+		out := strings.TrimSpace(e.run(arg))
+		v, ok := strings.CutPrefix(out, "doze ")
+		if !ok || v == "" || strings.Contains(v, " ") {
+			t.Errorf("doze %s = %q, want doze <version>", arg, out)
+		}
+	}
+}
