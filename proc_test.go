@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"net"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -144,5 +146,27 @@ func TestStartRunsSingleStringThroughShell(t *testing.T) {
 	<-p.Done()
 	if got := strings.TrimSpace(out.String()); got != "4321" {
 		t.Fatalf("output = %q, want 4321", got)
+	}
+}
+
+func TestStartFindsCommandInPATHOfSpec(t *testing.T) {
+	dir := t.TempDir()
+	script := "#!/bin/sh\necho found\n"
+	if err := os.WriteFile(filepath.Join(dir, "doze-test-cmd"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	out := &syncBuffer{}
+	p, err := StartProcess(ProcessSpec{
+		Cmd:    []string{"doze-test-cmd"},
+		Env:    []string{"PATH=" + dir + ":/usr/bin:/bin"},
+		Stdout: out,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-p.Done()
+	if got := strings.TrimSpace(out.String()); got != "found" {
+		t.Fatalf("output = %q, want found", got)
 	}
 }

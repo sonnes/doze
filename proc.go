@@ -13,6 +13,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -62,6 +63,33 @@ func Expand(cmd []string, port int) ([]string, bool) {
 	return out, found
 }
 
+// lookPath finds name in the last PATH of env. exec.Command uses the PATH
+// of the daemon, and launchd gives the daemon a short PATH. If name has a
+// slash, or no absolute directory in PATH holds it, lookPath returns name.
+func lookPath(name string, env []string) string {
+	if strings.Contains(name, "/") {
+		return name
+	}
+	path := ""
+	for _, kv := range env {
+		if v, ok := strings.CutPrefix(kv, "PATH="); ok {
+			path = v
+		}
+	}
+	for _, dir := range filepath.SplitList(path) {
+		if !filepath.IsAbs(dir) {
+			continue
+		}
+		file := filepath.Join(dir, name)
+		info, err := os.Stat(file)
+		if err != nil || !info.Mode().IsRegular() || info.Mode()&0o111 == 0 {
+			continue
+		}
+		return file
+	}
+	return name
+}
+
 // StartProcess starts the command in s. A command of one string with spaces or
 // shell characters runs through sh -c.
 func StartProcess(s ProcessSpec) (*Process, error) {
@@ -73,10 +101,12 @@ func StartProcess(s ProcessSpec) (*Process, error) {
 		args = []string{"sh", "-c", args[0]}
 	}
 
-	cmd := exec.Command(args[0], args[1:]...)
+	env := append(os.Environ(), s.Env...)
+	env = append(env, "PORT="+strconv.Itoa(s.Port))
+
+	cmd := exec.Command(lookPath(args[0], env), args[1:]...)
 	cmd.Dir = s.Dir
-	cmd.Env = append(os.Environ(), s.Env...)
-	cmd.Env = append(cmd.Env, "PORT="+strconv.Itoa(s.Port))
+	cmd.Env = env
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = s.Stdin, s.Stdout, s.Stderr
 	if s.NewGroup {
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
