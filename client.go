@@ -104,14 +104,15 @@ type ClientAttachment struct {
 	HTTPSPort int
 }
 
-// Attach routes name to a one-off run.
-func (c *Client) Attach(name string) (*ClientAttachment, error) {
+// Attach routes name, and name.domain if domain is not empty, to a one-off
+// run.
+func (c *Client) Attach(name, domain string) (*ClientAttachment, error) {
 	conn, err := net.Dial("unix", c.sock)
 	if err != nil {
 		return nil, err
 	}
 	enc := json.NewEncoder(conn)
-	if err := enc.Encode(Request{Op: "attach", Name: name}); err != nil {
+	if err := enc.Encode(Request{Op: "attach", Name: name, Domain: domain}); err != nil {
 		conn.Close()
 		return nil, err
 	}
@@ -124,7 +125,12 @@ func (c *Client) Attach(name string) (*ClientAttachment, error) {
 		conn.Close()
 		return nil, errors.New(res.Error)
 	}
-	return &ClientAttachment{conn: conn, enc: enc, ProxyPort: res.ProxyPort, HTTPSPort: res.HTTPSPort}, nil
+	return &ClientAttachment{
+		conn:      conn,
+		enc:       enc,
+		ProxyPort: res.ProxyPort,
+		HTTPSPort: res.HTTPSPort,
+	}, nil
 }
 
 // SetPort tells the daemon the port of the one-off run.

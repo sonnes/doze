@@ -262,3 +262,41 @@ func TestVersionPrintsBuildVersion(t *testing.T) {
 		}
 	}
 }
+
+func TestRegisterWithDomainUpdatesHostsFile(t *testing.T) {
+	e := newEnv(t)
+	hosts := filepath.Join(t.TempDir(), "hosts")
+	os.WriteFile(hosts, []byte("127.0.0.1 localhost\n"), 0o644)
+	run := func(args ...string) string {
+		t.Helper()
+		cmd := e.cmd(args...)
+		cmd.Env = append(cmd.Env, "DOZE_HOSTS_FILE="+hosts)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("doze %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+		return string(out)
+	}
+
+	out := run("register", "--name", "api", "--domain", "dev.example.com", helperPath(t))
+	if !strings.Contains(out, "https://api.dev.example.com:") {
+		t.Fatalf("register output = %q, want the domain URL", out)
+	}
+	run("register", "--name", "web", helperPath(t))
+	data, _ := os.ReadFile(hosts)
+	if !strings.HasPrefix(string(data), "127.0.0.1 localhost\n") || !strings.Contains(string(data), "127.0.0.1 api.dev.example.com\n") {
+		t.Fatalf("hosts file = %q", data)
+	}
+	if strings.Contains(string(data), "web.") {
+		t.Fatalf("hosts file has an app without a domain: %q", data)
+	}
+	if code, body := e.get("api.dev.example.com"); code != 200 || !strings.Contains(body, "host=api.dev.example.com") {
+		t.Fatalf("got %d %q", code, body)
+	}
+
+	os.WriteFile(hosts, []byte("127.0.0.1 localhost\n"), 0o644)
+	run("hosts")
+	if data, _ := os.ReadFile(hosts); !strings.Contains(string(data), "127.0.0.1 api.dev.example.com\n") {
+		t.Fatalf("hosts file after doze hosts = %q", data)
+	}
+}

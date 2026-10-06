@@ -13,6 +13,8 @@ type Request struct {
 	Name string `json:"name,omitempty"`
 	App  *App   `json:"app,omitempty"`
 	Port int    `json:"port,omitempty"`
+	// Domain is the domain of a one-off run, for attach.
+	Domain string `json:"domain,omitempty"`
 }
 
 // Response is one line of JSON that the daemon sends back.
@@ -50,7 +52,7 @@ func (d *Daemon) serveConn(c net.Conn) {
 	}
 
 	if req.Op == "attach" {
-		a, err := d.Attach(req.Name)
+		a, err := d.Attach(req.Name, req.Domain)
 		if err != nil {
 			enc.Encode(Response{Error: err.Error()})
 			return

@@ -12,7 +12,8 @@ import (
 	"strings"
 )
 
-// Handler returns the proxy. It routes <name>.localhost to the app name.
+// Handler returns the proxy. It routes <name>.localhost, and
+// <name>.<domain> for an app with a domain, to the app name.
 func (d *Daemon) Handler() http.Handler {
 	return http.HandlerFunc(d.serveProxy)
 }
@@ -23,6 +24,9 @@ func (d *Daemon) serveProxy(w http.ResponseWriter, r *http.Request) {
 		host = h
 	}
 	name, ok := strings.CutSuffix(host, ".localhost")
+	if !ok {
+		name, ok = d.nameOfDomainHost(host)
+	}
 	if !ok {
 		d.serveOther(w, r, host)
 		return
@@ -51,6 +55,19 @@ func (d *Daemon) serveProxy(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	proxy.ServeHTTP(w, r)
+}
+
+// nameOfDomainHost returns the name of the route whose <name>.<domain> is
+// host.
+func (d *Daemon) nameOfDomainHost(host string) (string, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for _, r := range d.routes {
+		if dom := r.domain(); dom != "" && host == r.name+"."+dom {
+			return r.name, true
+		}
+	}
+	return "", false
 }
 
 // serveOther serves a host that is not <name>.localhost. It lists the apps

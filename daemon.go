@@ -25,6 +25,8 @@ type App struct {
 	Env  []string `json:"env,omitempty"`  // for example the PATH at registration
 	Port int      `json:"port,omitempty"` // a fixed upstream port
 	Idle Duration `json:"idle"`           // 0 keeps the app running
+	// Domain routes <name>.<Domain> as well as <name>.localhost.
+	Domain string `json:"domain,omitempty"`
 }
 
 // Duration is a time.Duration that is a string in JSON, such as "30m".
@@ -51,6 +53,7 @@ type Status struct {
 	Dir    string   `json:"dir,omitempty"`
 	Cmd    []string `json:"cmd,omitempty"`
 	Idle   Duration `json:"idle"`
+	Domain string   `json:"domain,omitempty"`
 	Error  string   `json:"error,omitempty"`
 }
 
@@ -101,8 +104,21 @@ type route struct {
 }
 
 type oneoff struct {
-	port  int
-	ready chan struct{}
+	port   int
+	domain string
+	ready  chan struct{}
+}
+
+// domain returns the domain that routes to r. A one-off run replaces the
+// registered app, so its domain wins.
+func (r *route) domain() string {
+	if r.oneoff != nil {
+		return r.oneoff.domain
+	}
+	if r.app != nil {
+		return r.app.Domain
+	}
+	return ""
 }
 
 // NewDaemon loads the registered apps from cfg.Home.
@@ -149,10 +165,25 @@ func ValidName(name string) error {
 	return nil
 }
 
+// validDomain reports whether domain can follow the name of an app. An
+// empty domain is valid.
+func validDomain(domain string) error {
+	if domain == "" {
+		return nil
+	}
+	if err := ValidName(domain); err != nil {
+		return fmt.Errorf("bad domain %q", domain)
+	}
+	return nil
+}
+
 // Register adds or replaces a registered app. A running app with the same
 // name stops.
 func (d *Daemon) Register(a App) error {
 	if err := ValidName(a.Name); err != nil {
+		return err
+	}
+	if err := validDomain(a.Domain); err != nil {
 		return err
 	}
 	if len(a.Cmd) == 0 && a.Port == 0 {
@@ -216,7 +247,7 @@ func (d *Daemon) List() []Status {
 	defer d.mu.Unlock()
 	out := []Status{}
 	for _, r := range d.routes {
-		s := Status{Name: r.name, State: r.state, Port: r.port}
+		s := Status{Name: r.name, State: r.state, Port: r.port, Domain: r.domain()}
 		if r.app != nil {
 			s.Dir, s.Cmd, s.Idle = r.app.Dir, r.app.Cmd, r.app.Idle
 			if len(r.app.Cmd) == 0 {
@@ -461,10 +492,14 @@ type Attachment struct {
 	o *oneoff
 }
 
-// Attach routes name to a one-off run. A registered app with the same name
-// stops until the attachment closes. Requests wait until SetPort.
-func (d *Daemon) Attach(name string) (*Attachment, error) {
+// Attach routes name, and name.domain if domain is not empty, to a one-off
+// run. A registered app with the same name stops until the attachment
+// closes. Requests wait until SetPort.
+func (d *Daemon) Attach(name, domain string) (*Attachment, error) {
 	if err := ValidName(name); err != nil {
+		return nil, err
+	}
+	if err := validDomain(domain); err != nil {
 		return nil, err
 	}
 	d.mu.Lock()
@@ -478,7 +513,7 @@ func (d *Daemon) Attach(name string) (*Attachment, error) {
 		return nil, fmt.Errorf("another doze run uses %s", name)
 	}
 	p := d.stopLocked(r)
-	o := &oneoff{ready: make(chan struct{})}
+	o := &oneoff{domain: domain, ready: make(chan struct{})}
 	r.oneoff = o
 	d.mu.Unlock()
 	d.stopProc(p)

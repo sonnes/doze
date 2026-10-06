@@ -1,5 +1,6 @@
-// The CA signs a certificate for each <name>.localhost host, so that the
-// proxy can serve HTTPS. doze setup adds the CA to the login keychain.
+// The CA signs a certificate for each <name>.localhost host, and for each
+// host under a domain that doze setup --domain added, so that the proxy can
+// serve HTTPS. doze setup adds the CA to the login keychain.
 
 package main
 
@@ -48,7 +49,7 @@ func LoadCA(home string) (*CA, error) {
 	certPEM, certErr := os.ReadFile(CAFile(home))
 	keyPEM, keyErr := os.ReadFile(caKeyFile(home))
 	if errors.Is(certErr, os.ErrNotExist) && errors.Is(keyErr, os.ErrNotExist) {
-		return newCA(home)
+		return newCA(home, nil)
 	}
 	if certErr != nil {
 		return nil, certErr
@@ -77,7 +78,30 @@ func LoadCA(home string) (*CA, error) {
 	}, nil
 }
 
-func newCA(home string) (*CA, error) {
+// EnsureCA returns the CA in home. If the CA does not permit domain, EnsureCA
+// replaces it with a CA that permits domain and every domain of the old CA.
+// The name constraints of a CA cannot change, so a new domain needs a new CA,
+// and doze setup must trust it again.
+func EnsureCA(home, domain string) (*CA, error) {
+	ca, err := LoadCA(home)
+	if err != nil {
+		return nil, err
+	}
+	if domain == "" || ca.Permits(domain) {
+		return ca, nil
+	}
+	var domains []string
+	for _, d := range ca.Cert.PermittedDNSDomains {
+		if d != "localhost" {
+			domains = append(domains, d)
+		}
+	}
+	return newCA(home, append(domains, domain))
+}
+
+// newCA makes a CA that permits localhost and domains.
+func newCA(home string, domains []string) (*CA, error) {
+	permitted := append([]string{"localhost"}, domains...)
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, err
@@ -97,9 +121,9 @@ func newCA(home string) (*CA, error) {
 		IsCA:                  true,
 		MaxPathLenZero:        true,
 		// The CA is trusted by the browser. If its key leaks, the constraint
-		// keeps it from signing a certificate for a real domain.
+		// keeps it from signing a certificate for any other domain.
 		PermittedDNSDomainsCritical: true,
-		PermittedDNSDomains:         []string{"localhost"},
+		PermittedDNSDomains:         permitted,
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	if err != nil {
@@ -132,6 +156,17 @@ func newCA(home string) (*CA, error) {
 	}, nil
 }
 
+// Permits reports whether the name constraints of the CA include host.
+func (ca *CA) Permits(host string) bool {
+	host = strings.ToLower(host)
+	for _, d := range ca.Cert.PermittedDNSDomains {
+		if host == d || strings.HasSuffix(host, "."+d) {
+			return true
+		}
+	}
+	return false
+}
+
 // TLSConfig returns a server config that signs a certificate for each host
 // on its first handshake. A wildcard for *.localhost does not work, because
 // macOS rejects a wildcard directly under a top-level domain.
@@ -147,8 +182,8 @@ func (ca *CA) certificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error) 
 	if host == "" {
 		host = "localhost"
 	}
-	if host != "localhost" && !strings.HasSuffix(host, ".localhost") {
-		return nil, fmt.Errorf("doze serves only localhost names, not %q", host)
+	if !ca.Permits(host) {
+		return nil, fmt.Errorf("the doze CA does not permit %q. Run doze setup --domain", host)
 	}
 
 	ca.mu.Lock()

@@ -33,8 +33,9 @@ Usage:
   doze start <name>
   doze stop <name>
   doze logs [-f] <name>
+  doze hosts                         write a line to /etc/hosts for each app with a domain
   doze daemon [stop]
-  doze setup                         trust the HTTPS CA and start the daemon at login (macOS)
+  doze setup [--domain <domain>]     trust the HTTPS CA and start the daemon at login (macOS)
   doze uninstall                     undo doze setup
   doze version
 
@@ -42,6 +43,7 @@ Flags:
   --name <name>   the subdomain (default: the package.json name or the directory name)
   --port <port>   the port the app listens on, if doze must not find it
   --idle <time>   stop a registered app after this idle time (default 30m, 0 = never)
+  --domain <d>    also route <name>.<d>. Run doze setup --domain <d> once for HTTPS.
 
 A command can use {port}, for example: doze register go run . -addr :{port}
 Every command also gets the PORT environment variable.
@@ -50,6 +52,7 @@ Environment:
   DOZE_HOME         state directory (default ~/.local/state/doze)
   DOZE_ADDR         HTTP address of the proxy (default :80)
   DOZE_HTTPS_ADDR   HTTPS address of the proxy (default :443)
+  DOZE_HOSTS_FILE   the hosts file that doze updates (default /etc/hosts)
 `
 
 // Main runs the doze command and returns the exit code.
@@ -76,6 +79,8 @@ func Main(args []string) int {
 		err = list()
 	case "logs":
 		err = logs(args[1:])
+	case "hosts":
+		err = hosts()
 	case "daemon":
 		if len(args) > 1 && args[1] == "stop" {
 			err = stopDaemon()
@@ -83,7 +88,7 @@ func Main(args []string) int {
 			err = runDaemon()
 		}
 	case "setup":
-		err = setup()
+		err = setup(args[1:])
 	case "uninstall":
 		err = uninstall()
 	default:
@@ -116,10 +121,11 @@ func home() string {
 func sockPath() string { return filepath.Join(home(), "doze.sock") }
 
 type options struct {
-	name string
-	port int
-	idle time.Duration
-	cmd  []string
+	name   string
+	port   int
+	idle   time.Duration
+	domain string
+	cmd    []string
 }
 
 func parse(name string, args []string) (options, error) {
@@ -129,10 +135,15 @@ func parse(name string, args []string) (options, error) {
 	fs.StringVar(&o.name, "name", "", "")
 	fs.IntVar(&o.port, "port", 0, "")
 	fs.DurationVar(&o.idle, "idle", 30*time.Minute, "")
+	fs.StringVar(&o.domain, "domain", "", "")
 	if err := fs.Parse(args); err != nil {
 		return o, err
 	}
 	o.cmd = fs.Args()
+	o.domain = strings.ToLower(o.domain)
+	if err := validDomain(o.domain); err != nil {
+		return o, err
+	}
 	if o.name == "" {
 		dir, _ := os.Getwd()
 		o.name = InferName(dir)
@@ -164,17 +175,46 @@ func InferName(dir string) string {
 	return strings.TrimRight(b.String(), "-")
 }
 
-// appURL returns the HTTPS URL of name when the daemon serves HTTPS, and the
+// appURL returns the HTTPS URL of host when the daemon serves HTTPS, and the
 // HTTP URL otherwise.
-func appURL(name string, httpPort, httpsPort int) string {
+func appURL(host string, httpPort, httpsPort int) string {
 	scheme, port, defaultPort := "http", httpPort, 80
 	if httpsPort != 0 {
 		scheme, port, defaultPort = "https", httpsPort, 443
 	}
 	if port == defaultPort {
-		return scheme + "://" + name + ".localhost"
+		return scheme + "://" + host
 	}
-	return scheme + "://" + name + ".localhost:" + strconv.Itoa(port)
+	return scheme + "://" + host + ":" + strconv.Itoa(port)
+}
+
+// appURLs returns the URL of name under localhost, and under domain if it is
+// not empty, separated by two spaces.
+func appURLs(name, domain string, httpPort, httpsPort int) string {
+	urls := appURL(name+".localhost", httpPort, httpsPort)
+	if domain != "" {
+		urls += "  " + appURL(name+"."+domain, httpPort, httpsPort)
+	}
+	return urls
+}
+
+// warnDomain reports a domain that the CA does not permit. The app works
+// over HTTP, so the command goes on.
+func warnDomain(domain string) {
+	if domain == "" {
+		return
+	}
+	if ca, err := LoadCA(home()); err == nil && !ca.Permits(domain) {
+		fmt.Fprintf(os.Stderr, "doze: no HTTPS for %s. Run doze setup --domain %s\n", domain, domain)
+	}
+}
+
+// warnHosts reports a failed update of the hosts file. The route works
+// without it on localhost, so the failure does not stop the command.
+func warnHosts(err error) {
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "doze: %s is not updated: %v. Run doze hosts in a terminal\n", hostsFile(), err)
+	}
 }
 
 // connect returns a client. It starts the daemon in the background if it
@@ -247,12 +287,14 @@ func runOneOff(args []string) int {
 		fmt.Fprintln(os.Stderr, "doze:", err)
 		return 1
 	}
-	a, err := c.Attach(o.name)
+	a, err := c.Attach(o.name, o.domain)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "doze:", err)
 		return 1
 	}
 	defer a.Close()
+	warnHosts(syncHosts(c))
+	warnDomain(o.domain)
 
 	free, err := FreePort()
 	if err != nil {
@@ -300,7 +342,7 @@ func runOneOff(args []string) int {
 			return
 		}
 		a.SetPort(port)
-		fmt.Fprintf(os.Stderr, "doze  %s  %s  -> localhost:%d\n", o.name, appURL(o.name, a.ProxyPort, a.HTTPSPort), port)
+		fmt.Fprintf(os.Stderr, "doze  %s  %s  -> localhost:%d\n", o.name, appURLs(o.name, o.domain, a.ProxyPort, a.HTTPSPort), port)
 	}()
 
 	<-p.Done()
@@ -324,15 +366,27 @@ func register(args []string) error {
 		return err
 	}
 	app := App{
-		Name: o.name, Dir: dir, Cmd: o.cmd, Port: o.port, Idle: Duration(o.idle),
+		Name: o.name, Dir: dir, Cmd: o.cmd, Port: o.port, Idle: Duration(o.idle), Domain: o.domain,
 		Env: []string{"PATH=" + os.Getenv("PATH")}, // launchd gives the daemon a short PATH
 	}
 	if err := c.Register(app); err != nil {
 		return err
 	}
+	warnHosts(syncHosts(c))
+	warnDomain(o.domain)
 	hp, sp, _ := c.Ports()
-	fmt.Printf("doze  %s  %s  starts on the first request\n", o.name, appURL(o.name, hp, sp))
+	fmt.Printf("doze  %s  %s  starts on the first request\n", o.name, appURLs(o.name, o.domain, hp, sp))
 	return nil
+}
+
+// hosts writes a <name>.<domain> line to the hosts file for each app with a
+// domain.
+func hosts() error {
+	c, err := connect()
+	if err != nil {
+		return err
+	}
+	return syncHosts(c)
 }
 
 func byName(op string, args []string) error {
@@ -373,7 +427,7 @@ func list() error {
 		if a.OneOff {
 			cmd = "(one-off run)"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", a.Name, a.State, appURL(a.Name, hp, sp), port, cmd)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", a.Name, a.State, appURL(a.Name+".localhost", hp, sp), port, cmd)
 	}
 	return w.Flush()
 }

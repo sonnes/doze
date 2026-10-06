@@ -56,7 +56,7 @@ func TestInfoReturnsProxyPort(t *testing.T) {
 
 func TestAttachLastsUntilClose(t *testing.T) {
 	d, c := serve(t)
-	a, err := c.Attach("web")
+	a, err := c.Attach("web", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestAttachLastsUntilClose(t *testing.T) {
 		return len(l) == 1 && l[0].OneOff && l[0].Port == 5173
 	})
 
-	if _, err := c.Attach("web"); err == nil {
+	if _, err := c.Attach("web", ""); err == nil {
 		t.Fatal("second Attach returned no error")
 	}
 

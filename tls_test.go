@@ -102,3 +102,76 @@ func TestCASignsOnlyLocalhostNames(t *testing.T) {
 		}
 	}
 }
+
+func TestCAWithDomainSignsItsNames(t *testing.T) {
+	home := shortTempDir(t)
+	ca, err := EnsureCA(home, "dev.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ca.Permits("api.dev.example.com") || !ca.Permits("api.localhost") {
+		t.Fatal("the CA does not permit the domain and localhost")
+	}
+	if ca.Permits("example.com") || ca.Permits("api.example.com") {
+		t.Fatal("the CA permits a name outside the domain")
+	}
+
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	srv.TLS = ca.TLSConfig()
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+	res, err := httpsClient(ca, "api.dev.example.com").Get(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if _, err := httpsClient(ca, "api.example.com").Get(srv.URL); err == nil {
+		t.Error("handshake for api.example.com succeeded, want an error")
+	}
+}
+
+func TestEnsureCAReplacesCAOnlyWhenTheDomainIsNew(t *testing.T) {
+	home := shortTempDir(t)
+	old, err := LoadCA(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	same, err := EnsureCA(home, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(old.Cert.Raw, same.Cert.Raw) {
+		t.Fatal("EnsureCA without a domain made a new CA")
+	}
+
+	withDomain, err := EnsureCA(home, "dev.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(old.Cert.Raw, withDomain.Cert.Raw) {
+		t.Fatal("EnsureCA kept a CA that does not permit the domain")
+	}
+	again, err := EnsureCA(home, "dev.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(withDomain.Cert.Raw, again.Cert.Raw) {
+		t.Fatal("EnsureCA replaced a CA that permits the domain")
+	}
+	second, err := EnsureCA(home, "dev.other.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !second.Permits("api.dev.other.com") || !second.Permits("api.dev.example.com") || !second.Permits("api.localhost") {
+		t.Fatal("a second domain dropped a domain that the CA permitted")
+	}
+	withDomain = second
+
+	loaded, err := LoadCA(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(withDomain.Cert.Raw, loaded.Cert.Raw) {
+		t.Fatal("LoadCA does not read the new CA")
+	}
+}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"io"
 	"net"
 	"net/http"
@@ -233,14 +234,14 @@ func TestAttachReplacesRegisteredApp(t *testing.T) {
 	p, _ := StartProcess(ProcessSpec{Cmd: []string{helperPath(t), "-port-env"}, Port: port, NewGroup: true})
 	t.Cleanup(func() { p.Stop(time.Second) })
 
-	a, err := d.Attach("web")
+	a, err := d.Attach("web", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if Dial(registeredPort) {
 		t.Fatal("registered app still runs after attach")
 	}
-	if _, err := d.Attach("web"); err == nil {
+	if _, err := d.Attach("web", ""); err == nil {
 		t.Fatal("second attach to the same name returned no error")
 	}
 
@@ -264,7 +265,7 @@ func TestAttachReplacesRegisteredApp(t *testing.T) {
 
 func TestAttachWithoutRegistrationRemovesRouteOnClose(t *testing.T) {
 	d, srv := newDaemon(t, shortTempDir(t))
-	a, err := d.Attach("tmp")
+	a, err := d.Attach("tmp", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -311,5 +312,56 @@ func TestOtherHostDoesNotListApps(t *testing.T) {
 	}
 	if code, body := get(t, srv, "localhost"); code != 200 || !strings.Contains(body, "api.localhost") {
 		t.Fatalf("localhost got %d %q, want the apps", code, body)
+	}
+}
+
+func TestDomainRoutesToApp(t *testing.T) {
+	d, srv := newDaemon(t, shortTempDir(t))
+	api := helperApp(t, "api")
+	api.Domain = "dev.example.com"
+	d.Register(api)
+	d.Register(helperApp(t, "web"))
+
+	code, body := get(t, srv, "api.dev.example.com")
+	if code != 200 || !strings.Contains(body, "host=api.dev.example.com") {
+		t.Fatalf("got %d %q", code, body)
+	}
+	if s := status(t, d, "api"); s.Domain != "dev.example.com" {
+		t.Fatalf("status domain = %q", s.Domain)
+	}
+	// web has no domain, so the domain of api does not route to it.
+	if code, _ := get(t, srv, "web.dev.example.com"); code != http.StatusNotFound {
+		t.Fatalf("web.dev.example.com got %d, want 404", code)
+	}
+	if code, body := get(t, srv, "api.example.com"); code != http.StatusNotFound || strings.Contains(body, "api") {
+		t.Fatalf("other domain got %d %q, want 404 without the apps", code, body)
+	}
+}
+
+func TestAttachWithDomainRoutesUntilClose(t *testing.T) {
+	d, srv := newDaemon(t, shortTempDir(t))
+	a, err := d.Attach("tmp", "dev.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := StartProcess(ProcessSpec{Cmd: []string{helperPath(t)}, NewGroup: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { p.Stop(time.Second) })
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	port, err := WaitPort(ctx, p, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.SetPort(port)
+
+	if code, body := get(t, srv, "tmp.dev.example.com"); code != 200 || !strings.Contains(body, "host=tmp.dev.example.com") {
+		t.Fatalf("got %d %q", code, body)
+	}
+	a.Close()
+	if code, _ := get(t, srv, "tmp.dev.example.com"); code != http.StatusNotFound {
+		t.Fatalf("got %d after close, want 404", code)
 	}
 }

@@ -79,6 +79,19 @@ Use `{port}` to put the port in a flag:
 doze register go run . -addr :{port}
 ```
 
+## A Custom Domain
+
+Google OAuth and some other services reject `.localhost` URLs. Give the app a domain that you own:
+
+```sh
+doze setup --domain dev.example.com               # once for each domain
+doze register --domain dev.example.com pnpm dev   # https://<name>.dev.example.com
+```
+
+The `<name>.localhost` URL continues to work. Setup makes a new CA that permits the domain, so macOS asks for your password again.
+
+doze adds `<name>.<domain>` to a block in `/etc/hosts` with `sudo cp`, then runs `sudo killall -HUP mDNSResponder`. If `sudo` cannot ask for your password, run `doze hosts` in a terminal. Do not run doze with `sudo`, because a daemon that root starts runs your apps as root.
+
 ## Commands
 
 | Command | Result |
@@ -91,13 +104,14 @@ doze register go run . -addr :{port}
 | `doze start <name>` | Start a registered app now. |
 | `doze stop <name>` | Stop a registered app now. |
 | `doze logs [-f] <name>` | Show the log of a registered app. |
+| `doze hosts` | Write a line to `/etc/hosts` for each app with a domain. |
 | `doze daemon` | Run the daemon in the foreground. |
 | `doze daemon stop` | Stop the daemon and its apps. |
-| `doze setup` | Trust the HTTPS CA and start the daemon at login (macOS). |
-| `doze uninstall` | Remove the launchd agent and the trust of the CA. |
+| `doze setup [--domain <domain>]` | Trust the HTTPS CA and start the daemon at login (macOS). `--domain` adds a domain to the CA. |
+| `doze uninstall` | Remove the launchd agent, the trust of the CA, and the doze lines in `/etc/hosts`. |
 | `doze version` | Show the version of doze. |
 
-Flags go before the command: `--name`, `--port`, and `--idle`.
+Flags go before the command: `--name`, `--port`, `--idle`, and `--domain`.
 
 `https://localhost` shows a list of the apps.
 
@@ -112,6 +126,7 @@ On macOS, a normal user can listen on `:80` and `:443` but not on `127.0.0.1:80`
 | `DOZE_HOME` | `~/.local/state/doze` | `apps.json`, `doze.sock`, `daemon.log`, `logs/`, and the CA |
 | `DOZE_ADDR` | `:80` | The HTTP address of the proxy. Use `127.0.0.1:7355` if port 80 is not available. |
 | `DOZE_HTTPS_ADDR` | `:443` | The HTTPS address of the proxy. If doze cannot listen on it, the daemon serves only HTTP. |
+| `DOZE_HOSTS_FILE` | `/etc/hosts` | The hosts file that doze updates. |
 
 When a doze command starts the daemon, the daemon gets only these environment variables: `HOME`, `USER`, `LOGNAME`, `SHELL`, `TMPDIR`, `PATH`, `LANG`, `LC_*`, and `DOZE_*`. launchd gives a daemon a similar set. A registered app gets these variables, the `PATH` from its registration, and `PORT`. The app runs in the directory where you registered it.
 
